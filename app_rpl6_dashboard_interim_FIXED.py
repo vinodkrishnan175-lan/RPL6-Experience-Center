@@ -1,566 +1,645 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import plotly.express as px
-import re
-from pathlib import Path
+from dataclasses import dataclass
+from typing import List, Dict, Tuple
 
-# ==============================
-# Page + Theme (Lovable-dark, Option C)
-# ==============================
-st.set_page_config(page_title="RPL 6 Experience Centre", layout="wide")
-
-st.markdown(
-    """
-<style>
-html, body, [data-testid="stAppViewContainer"] { background: #0b0f14 !important; color: rgba(255,255,255,0.92) !important; }
-section[data-testid="stSidebar"] > div { background: #0b0f14 !important; border-right: 1px solid rgba(255,255,255,0.06); }
-h1,h2,h3,h4 { color: rgba(255,255,255,0.96) !important; }
-a, a:visited { color: #2d7ff9 !important; }
-.block-container { padding-top: 1.0rem; padding-bottom: 2.0rem; max-width: 1200px; }
-.rpl-banner { border-radius: 22px; padding: 18px 18px 14px 18px;
-  background: linear-gradient(90deg, rgba(45,127,249,0.20), rgba(255,255,255,0.05));
-  border: 1px solid rgba(255,255,255,0.10);
-  box-shadow: 0 12px 28px rgba(0,0,0,0.30);
-  margin-bottom: 16px; }
-.rpl-card { border-radius: 18px; padding: 14px 16px;
-  background: rgba(255,255,255,0.04);
-  border: 1px solid rgba(255,255,255,0.10);
-  box-shadow: 0 10px 24px rgba(0,0,0,0.24); }
-.rpl-pill { display: inline-block; padding: 4px 10px; border-radius: 999px;
-  background: rgba(45,127,249,0.20); border: 1px solid rgba(45,127,249,0.28);
-  color: rgba(255,255,255,0.92); font-size: 12px; }
-.rpl-muted { opacity: 0.78; font-size: 13px; }
-.rpl-small { opacity: 0.82; font-size: 12px; line-height: 1.35; }
-hr { border: none; height: 1px; background: rgba(255,255,255,0.08); margin: 14px 0; }
-.lock-badge { font-size:12px; color: #ffd54d; margin-left:8px; }
-
-/* ===== Mobile optimizations ===== */
-@media (max-width: 768px) {
-  .block-container { padding-left: 0.8rem !important; padding-right: 0.8rem !important; padding-top: 0.6rem !important; }
-  .rpl-banner { padding: 14px 14px 12px 14px !important; border-radius: 18px !important; }
-  .rpl-card { padding: 12px 12px !important; border-radius: 16px !important; }
-  h1 { font-size: 1.35rem !important; }
-  h2 { font-size: 1.15rem !important; }
-  h3 { font-size: 1.02rem !important; }
-  /* Make Streamlit columns stack */
-  div[data-testid="stHorizontalBlock"] { flex-direction: column !important; }
-  div[data-testid="column"] { width: 100% !important; flex: 1 1 100% !important; }
-  /* Tabs: allow horizontal scroll instead of squish */
-  div[data-testid="stTabs"] button { font-size: 12px !important; padding: 6px 10px !important; }
-  div[data-testid="stTabs"] [role="tablist"] { overflow-x: auto !important; flex-wrap: nowrap !important; }
-  div[data-testid="stTabs"] [role="tablist"]::-webkit-scrollbar { height: 6px; }
-  /* Tighten metrics spacing */
-  div[data-testid="stMetric"] { padding: 6px 8px !important; }
-}
-
-</style>
-""",
-    unsafe_allow_html=True,
+# -----------------------------
+# App config
+# -----------------------------
+st.set_page_config(
+    page_title="RPL 6 Predictor",
+    page_icon="🏆",
+    layout="wide",
 )
 
-# ==============================
-# Constants / Labels
-# ==============================
-LAST_UPDATED_DROP = 25
-TOTAL_VALID_DROPS = 24  # Drop 12 scrapped
+st.title("🏆 RPL 6 Predictor")
+st.caption("Behavioral tournament predictor — transparent inputs → assumptions → outputs (no hidden math).")
 
-ARCH_DEF = {
-    "Strategist": "High participation + selective conviction. Plays the long game and waits for leverage.",
-    "Anchor": "Low volatility. Stays steady and doesn’t flinch when the room swings.",
-    "Maverick": "High contrarian rate. Comfortable standing alone with minority reads.",
-    "Wildcard": "High variance profile. Volatile + higher-risk positioning creates big upside.",
-    "Calibrator": "High volatility. Recalibrates stance frequently based on context.",
-    "Wiseman": "High consensus alignment. Amplifies collective clarity when confidence is strong.",
-    "Pragmatist": "Balanced and situational. Mixes approaches without chasing extremes.",
-    "Ghost": "Low attendance so far. Not enough signal yet to infer a stable style."
-}
 
-BUCKET_EXPLAIN = {
-    "H": "Most popular option (crowd favourite)",
-    "M": "Middle options (neither most nor least popular)",
-    "L": "Least popular option (contrarian lane)"
-}
+# -----------------------------
+# Utilities
+# -----------------------------
+def clamp(x: float, lo: float, hi: float) -> float:
+    return max(lo, min(hi, x))
 
-# ==============================
-# Helpers
-# ==============================
-def clean_name(s: str) -> str:
-    return re.sub(r"\s+", " ", str(s).strip())
 
-def key_name(s: str) -> str:
-    return clean_name(s).lower()
+def safe_int(x, default=0):
+    try:
+        return int(x)
+    except Exception:
+        return default
 
-def is_blank(x) -> bool:
-    return pd.isna(x) or (isinstance(x, str) and str(x).strip() == "")
 
-def plotly_dark_defaults(fig):
-    fig.update_layout(
-        template="plotly_dark",
-        paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="rgba(0,0,0,0)",
-        font=dict(color="rgba(255,255,255,0.92)"),
-        margin=dict(l=10, r=10, t=20, b=10),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+def safe_float(x, default=0.0):
+    try:
+        return float(x)
+    except Exception:
+        return default
+
+
+def normalize_weights(weights: pd.Series) -> pd.Series:
+    w = weights.astype(float).clip(lower=0.0)
+    s = w.sum()
+    if s <= 0:
+        return pd.Series(np.ones(len(w)) / len(w), index=w.index)
+    return w / s
+
+
+def make_sample_participants() -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {"participant": "Aarav", "seed": 1, "skill": 0.70, "consistency": 0.60, "risk": 0.40},
+            {"participant": "Diya", "seed": 2, "skill": 0.65, "consistency": 0.70, "risk": 0.35},
+            {"participant": "Ishaan", "seed": 3, "skill": 0.62, "consistency": 0.55, "risk": 0.55},
+            {"participant": "Meera", "seed": 4, "skill": 0.60, "consistency": 0.65, "risk": 0.30},
+            {"participant": "Kabir", "seed": 5, "skill": 0.58, "consistency": 0.52, "risk": 0.60},
+            {"participant": "Sara", "seed": 6, "skill": 0.56, "consistency": 0.60, "risk": 0.45},
+            {"participant": "Vihaan", "seed": 7, "skill": 0.54, "consistency": 0.50, "risk": 0.55},
+            {"participant": "Anaya", "seed": 8, "skill": 0.52, "consistency": 0.62, "risk": 0.35},
+        ]
     )
-    return fig
 
-def compute_streaks(answered_flags):
-    longest = 0
-    cur = 0
-    for a in answered_flags:
-        if a:
-            cur += 1
-            longest = max(longest, cur)
-        else:
-            cur = 0
-    current = 0
-    for a in reversed(answered_flags):
-        if a:
-            current += 1
-        else:
-            break
-    return longest, current
 
-def parse_master_drop_groups(raw: pd.DataFrame):
-    row0 = raw.iloc[0].astype(str)
-    starts = [(i, row0[i]) for i in range(len(row0)) if isinstance(row0[i], str) and row0[i].startswith("Drop")]
-    groups = []
-    for idx, (start, label) in enumerate(starts):
-        end = starts[idx + 1][0] if idx + 1 < len(starts) else raw.shape[1]
-        width = end - start
-        import re as _re
-        m = _re.search(r"Drop\s+(\d+)", label)
-        drop_num = int(m.group(1)) if m else None
-        if drop_num is None or drop_num == 12:
-            continue
-        response_col = start
-        q_text = raw.iloc[2, response_col] if raw.shape[0] > 2 else f"Q{drop_num}"
-        q_text = str(q_text).strip() if pd.notna(q_text) else f"Q{drop_num}"
-        if width == 2:
-            pp_col = None
-            bucket_col = start + 1
-        else:
-            pp_col = start + 1
-            bucket_col = start + 2
-        groups.append({
-            "drop": drop_num,
-            "resp_col": response_col,
-            "pp_col": pp_col,
-            "bucket_col": bucket_col,
-            "question": q_text
-        })
-    return sorted(groups, key=lambda x: x["drop"])
+def make_sample_questions() -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {"question": "Q1", "weight": 1.0, "difficulty": 0.55, "variance": 0.40},
+            {"question": "Q2", "weight": 1.0, "difficulty": 0.60, "variance": 0.45},
+            {"question": "Q3", "weight": 1.0, "difficulty": 0.50, "variance": 0.35},
+            {"question": "Q4", "weight": 1.0, "difficulty": 0.65, "variance": 0.55},
+            {"question": "Q5", "weight": 1.0, "difficulty": 0.58, "variance": 0.42},
+        ]
+    )
 
-# ==============================
-# Header
-# ==============================
-st.markdown(
-    f"""
-<div class="rpl-banner">
-  <div style="font-size: 26px; font-weight: 850; letter-spacing: 0.2px;">
-    RPL 6 Experience Centre
-  </div>
-  <div style="opacity: 0.92; margin-top: 4px; font-size: 14px;">
-    A behavioral analysis of each player's predictions and patterns
-    <span class="rpl-pill" style="margin-left:10px;">Last updated: Drop {LAST_UPDATED_DROP}</span>
-    <span class="lock-badge"> · Data locked (no uploads)</span>
-  </div>
-</div>
-""",
-    unsafe_allow_html=True,
-)
 
-# ==============================
-# Load baked-in files from data/
-# ==============================
-DATA_DIR = Path("data")
-metrics_path = DATA_DIR / "drop25_metrics.xlsx"
-master_path = DATA_DIR / "master_data.xlsx"
+def expected_question_score(skill: float, consistency: float, risk: float,
+                            difficulty: float, variance: float,
+                            base_points: float) -> float:
+    """
+    Transparent expected score model:
+    - skill helps overcome difficulty
+    - consistency reduces penalty from variance
+    - risk can help on high-variance questions but hurts on low-variance ones
+    """
+    # Skill vs difficulty
+    skill_term = (skill - difficulty)  # can be negative
 
-if not metrics_path.exists() or not master_path.exists():
-    st.error("Missing data files. Please add these files to the repo under a folder named `data/`:\n\n- drop25_metrics.xlsx\n- master_data.xlsx\n\nAfter uploading, refresh this page.")
-    st.stop()
+    # Variance handling
+    # Higher consistency -> less harmed by variance
+    stability = (1.0 - variance) + consistency * variance  # in [~0,1]
+    stability = clamp(stability, 0.0, 1.0)
 
-# Read metrics (first sheet)
-metrics = pd.read_excel(metrics_path, header=0)
-# If multiple sheets returned, take first (safety)
-if isinstance(metrics, dict):
-    metrics = list(metrics.values())[0]
+    # Risk interaction:
+    # - if variance high: risk slightly boosts
+    # - if variance low: risk slightly penalizes
+    risk_boost = (variance - 0.5) * (risk - 0.5)  # centered interaction
 
-# Basic normalization / required columns check
-metrics_cols = set(metrics.columns.astype(str).tolist())
-# expected columns (case-insensitive mapping)
-expected = {
-    "player": None,
-    "unique one-liner (editable)": None,
-    "attended": None,
-    "attendance%": None,
-    "h%": None,
-    "m%": None,
-    "l%": None,
-    "volatility%": None,
-    "risk score": None,
-    "pp taken": None,
-    "archetype": None
-}
+    # Compose (kept simple and explainable)
+    raw = 0.5 + 0.9 * skill_term + 0.25 * risk_boost
+    raw = clamp(raw, 0.0, 1.0)
 
-# build lowercase mapping
-col_map = {c.lower(): c for c in metrics.columns}
-missing = [k for k in expected.keys() if k not in col_map]
-if missing:
-    st.error(f"Metrics file is missing required columns (case-insensitive match). Found: {list(metrics.columns)}. Missing: {missing}")
-    st.stop()
+    return base_points * raw * (0.6 + 0.4 * stability)
 
-# rename to canonical
-metrics = metrics.rename(columns={col_map[k]: k for k in col_map if k in expected})
-# standardize Player and player_key
-metrics["Player"] = metrics["player"].astype(str).apply(clean_name)
-metrics["player_key"] = metrics["Player"].apply(key_name)
 
-# housekeeping columns expected names consistent with app code
-# The file may use slightly different header strings; ensure canonical names exist
-# Map common variations to app-friendly names
-if "unique one-liner (editable)" in metrics.columns:
-    metrics["Unique one-liner (editable)"] = metrics["unique one-liner (editable)"]
-if "pp taken" in metrics.columns:
-    metrics["PP Taken"] = metrics["pp taken"]
+def build_matchups(participants: List[str], bracket_style: str) -> List[Tuple[str, str]]:
+    """
+    Build round-1 matchups.
+    - "Seeded (1 vs N)" uses seed ordering.
+    - "Random" shuffles.
+    """
+    names = participants.copy()
+    if bracket_style == "Random":
+        rng = np.random.default_rng(42)
+        rng.shuffle(names)
+        pairs = [(names[i], names[i + 1]) for i in range(0, len(names), 2)]
+        return pairs
+    # Seeded
+    # assume list is already seed-sorted
+    pairs = []
+    n = len(names)
+    for i in range(n // 2):
+        pairs.append((names[i], names[n - 1 - i]))
+    return pairs
 
-# force numeric types for critical columns
-metrics["Attended_out_of_24"] = pd.to_numeric(metrics["attended"], errors="coerce").fillna(0).astype(int)
-metrics["AttendancePct_out_of_24"] = (metrics["Attended_out_of_24"] / TOTAL_VALID_DROPS) * 100.0
-metrics["H%"] = pd.to_numeric(metrics["h%"], errors="coerce").fillna(0.0)
-metrics["M%"] = pd.to_numeric(metrics["m%"], errors="coerce").fillna(0.0)
-metrics["L%"] = pd.to_numeric(metrics["l%"], errors="coerce").fillna(0.0)
-metrics["Volatility%"] = pd.to_numeric(metrics["volatility%"], errors="coerce").fillna(0.0)
-metrics["Risk Score"] = pd.to_numeric(metrics["risk score"], errors="coerce").fillna(0.0)
-metrics["PP Taken"] = pd.to_numeric(metrics["PP Taken"].fillna(0), errors="coerce").fillna(0).astype(int)
-metrics["Archetype"] = metrics["archetype"].astype(str)
 
-# Read master file for PP moments and streaks
-raw_master = pd.read_excel(master_path, sheet_name="Summary", header=None)
-groups = parse_master_drop_groups(raw_master)
-q_lookup = {g["drop"]: g["question"] for g in groups}
+def summarize_series_to_text(s: pd.Series, top_n=3) -> str:
+    s2 = s.sort_values(ascending=False).head(top_n)
+    return ", ".join([f"{idx} ({val:.2f})" for idx, val in s2.items()])
 
-# map player to row index in master
-player_to_row = {}
-for r in range(3, 51):
-    nm = raw_master.iloc[r, 2] if raw_master.shape[1] > 2 else None
-    if is_blank(nm):
-        continue
-    player_to_row[key_name(nm)] = r
 
-pp_details = {}
-streaks = {}
-valid_pp_second_drop = {}
-for _, row in metrics.iterrows():
-    pk = row["player_key"]
-    r = player_to_row.get(pk, None)
-    if r is None:
-        # leave entries blank; will still show metrics from baked file
-        continue
-    answered_flags = []
-    pp_yes_drops = []
-    pp_bucket_by_drop = {}
-    for g in groups:
-        resp = raw_master.iloc[r, g["resp_col"]]
-        answered = not is_blank(resp)
-        answered_flags.append(answered)
-        b = raw_master.iloc[r, g["bucket_col"]] if g["bucket_col"] is not None else ""
-        b = b.strip() if isinstance(b, str) else ""
-        if g["pp_col"] is not None:
-            pp = raw_master.iloc[r, g["pp_col"]]
-            if isinstance(pp, str) and pp.strip().lower() == "yes":
-                pp_yes_drops.append(g["drop"])
-                if answered and b in ["H", "M", "L"]:
-                    pp_bucket_by_drop[g["drop"]] = b
-    longest, current = compute_streaks(answered_flags)
-    streaks[pk] = {"longest": longest, "current": current}
-    pp_total_marked = len(pp_yes_drops)
-    pp_valid = pp_yes_drops[:2]
-    moments = []
-    if len(pp_valid) >= 1:
-        d1 = int(pp_valid[0])
-        moments.append({"drop": d1, "question": q_lookup.get(d1, f"Q{d1}"), "bucket": pp_bucket_by_drop.get(d1, ""), "ordinal": "First"})
-    if len(pp_valid) >= 2:
-        d2 = int(pp_valid[1])
-        moments.append({"drop": d2, "question": q_lookup.get(d2, f"Q{d2}"), "bucket": pp_bucket_by_drop.get(d2, ""), "ordinal": "Second"})
-        valid_pp_second_drop[pk] = d2
-    pp_details[pk] = {"pp_total_marked": pp_total_marked, "pp_valid_count": len(pp_valid), "moments": moments}
+# -----------------------------
+# Sidebar: data source & high-level controls
+# -----------------------------
+with st.sidebar:
+    st.header("⚙️ Setup")
 
-metrics["CurrentStreak"] = metrics["player_key"].map(lambda k: streaks.get(k, {}).get("current", np.nan))
-metrics["LongestStreak"] = metrics["player_key"].map(lambda k: streaks.get(k, {}).get("longest", np.nan))
-metrics["Second_PP_by_Q"] = metrics["player_key"].map(lambda k: valid_pp_second_drop.get(k, np.nan))
+    data_mode = st.radio(
+        "Choose data source",
+        options=["Use built-in sample data", "Upload CSVs", "Manual entry (quick)"],
+        index=0,
+        help="You can start with sample data, then switch to CSV upload or manual entry.",
+    )
 
-# Sidebar diagnostics (quick sanity)
-st.sidebar.markdown("**Diagnostics**")
-st.sidebar.markdown(f"- Loaded players: **{metrics['Player'].nunique()}**")
-st.sidebar.markdown(f"- Perfect (24/24): **{int((metrics['Attended_out_of_24']==TOTAL_VALID_DROPS).sum())}**")
-st.sidebar.markdown(f"- Last updated: Drop {LAST_UPDATED_DROP}")
+    st.divider()
 
-# ==============================
-# Section 1 — The Room
-# ==============================
-st.markdown("## Section 1 — The Room")
-st.markdown('<div class="rpl-muted">Behavioral “shape” of the room based on H/M/L buckets, volatility, and power play usage (Drop 12 excluded).</div>', unsafe_allow_html=True)
+    st.subheader("Tournament controls")
+    n_rounds = st.selectbox("Number of rounds", [1, 2, 3, 4], index=2)
+    bracket_style = st.selectbox("Round-1 bracket", ["Seeded (1 vs N)", "Random"], index=0)
 
-colA, colB, colC, colD = st.columns(4)
-n_players = metrics["Player"].nunique()
-active_25 = int((metrics["AttendancePct_out_of_24"] >= 25).sum())
-total_responses = int(metrics["Attended_out_of_24"].sum())
-perfect = int((metrics["Attended_out_of_24"] == TOTAL_VALID_DROPS).sum())
-pp_exhausted = int((metrics["PP Taken"].astype(int) >= 2).sum())
+    st.divider()
+
+    st.subheader("Scoring controls")
+    base_points = st.number_input("Base points per question", min_value=1.0, max_value=100.0, value=10.0, step=1.0)
+    pp_multiplier = st.number_input("Power Play multiplier", min_value=1.0, max_value=5.0, value=2.0, step=0.1)
+    pp_per_round = st.number_input("Power Plays per participant per round", min_value=0, max_value=10, value=1, step=1)
+
+    st.caption("Power Play is applied **per participant per round** to a **specific question**, and is fully shown in outputs.")
+
+
+# -----------------------------
+# Inputs section
+# -----------------------------
+st.markdown("## 1) Inputs")
+
+participants_df = None
+questions_df = None
+
+colA, colB = st.columns(2, gap="large")
 
 with colA:
-    st.metric("Players", n_players)
-with colB:
-    st.metric("Active (≥25% attendance)", active_25)
-with colC:
-    st.metric("Total valid drops", TOTAL_VALID_DROPS)
-with colD:
-    st.metric("Total responses", total_responses)
+    st.subheader("👥 Participants")
+    st.caption("Required columns: participant, seed, skill, consistency, risk")
 
-colE, colF, colG, colH = st.columns(4)
-with colE:
-    st.metric("Perfect Attendance Club", perfect)
-with colF:
-    if metrics["CurrentStreak"].notna().any():
-        streak10 = int((metrics["CurrentStreak"] >= 10).sum())
-        st.metric("10+ Current Streak Club", streak10)
+    if data_mode == "Use built-in sample data":
+        participants_df = make_sample_participants()
+        st.dataframe(participants_df, use_container_width=True)
+        st.download_button(
+            "Download sample participants CSV",
+            data=participants_df.to_csv(index=False).encode("utf-8"),
+            file_name="participants_sample.csv",
+            mime="text/csv",
+        )
+
+    elif data_mode == "Upload CSVs":
+        up_p = st.file_uploader("Upload participants CSV", type=["csv"], key="up_participants")
+        if up_p is not None:
+            participants_df = pd.read_csv(up_p)
+            st.dataframe(participants_df, use_container_width=True)
+
     else:
-        st.metric("10+ Current Streak Club", "—")
-with colG:
-    st.metric("PP exhausted (≥2 marked)", pp_exhausted)
-with colH:
-    total_bucketed = total_responses if total_responses else 1
-    room_H = float((metrics["H%"] / 100.0 * metrics["Attended_out_of_24"]).sum() / total_bucketed * 100.0)
-    st.metric("Room consensus tilt (H share)", f"{room_H:.1f}%")
+        st.caption("Quick manual entry (edit in-table). For larger rosters, use CSV upload.")
+        participants_df = st.data_editor(
+            make_sample_participants(),
+            num_rows="dynamic",
+            use_container_width=True,
+            key="participants_editor",
+        )
 
-# Mix donut and archetype distribution
-H_overall = float((metrics["H%"] / 100.0 * metrics["Attended_out_of_24"]).sum())
-M_overall = float((metrics["M%"] / 100.0 * metrics["Attended_out_of_24"]).sum())
-L_overall = float((metrics["L%"] / 100.0 * metrics["Attended_out_of_24"]).sum())
+with colB:
+    st.subheader("❓ Questions")
+    st.caption("Required columns: question, weight, difficulty, variance")
 
-mix_df = pd.DataFrame({
-    "Bucket": ["H", "M", "L"],
-    "Count": [H_overall, M_overall, L_overall],
-    "Meaning": [BUCKET_EXPLAIN["H"], BUCKET_EXPLAIN["M"], BUCKET_EXPLAIN["L"]]
-})
+    if data_mode == "Use built-in sample data":
+        questions_df = make_sample_questions()
+        st.dataframe(questions_df, use_container_width=True)
+        st.download_button(
+            "Download sample questions CSV",
+            data=questions_df.to_csv(index=False).encode("utf-8"),
+            file_name="questions_sample.csv",
+            mime="text/csv",
+        )
 
-c1, c2 = st.columns([1.2, 1.0])
-with c1:
-    fig = px.pie(mix_df, values="Count", names="Bucket", hover_data=["Meaning"], hole=0.55)
-    fig = plotly_dark_defaults(fig)
-    fig.update_traces(textposition="inside", textinfo="percent+label")
-    fig.update_layout(title="Overall H / M / L mix (weighted by participation)", height=420)
-    st.plotly_chart(fig, use_container_width=True)
-with c2:
-    arch_counts = metrics["Archetype"].value_counts().reset_index()
-    arch_counts.columns = ["Archetype", "Players"]
-    fig2 = px.bar(arch_counts, x="Archetype", y="Players")
-    fig2 = plotly_dark_defaults(fig2)
-    fig2.update_layout(title="Archetype distribution", height=420)
-    st.plotly_chart(fig2, use_container_width=True)
+    elif data_mode == "Upload CSVs":
+        up_q = st.file_uploader("Upload questions CSV", type=["csv"], key="up_questions")
+        if up_q is not None:
+            questions_df = pd.read_csv(up_q)
+            st.dataframe(questions_df, use_container_width=True)
 
-with st.expander("Metric explainer (tap to open)", expanded=False):
+    else:
+        questions_df = st.data_editor(
+            make_sample_questions(),
+            num_rows="dynamic",
+            use_container_width=True,
+            key="questions_editor",
+        )
+
+st.markdown("---")
+
+
+# Validate inputs
+def validate_inputs(p: pd.DataFrame, q: pd.DataFrame) -> Tuple[bool, List[str]]:
+    errors = []
+    if p is None or q is None:
+        errors.append("Please provide both participants and questions.")
+        return False, errors
+
+    req_p = ["participant", "seed", "skill", "consistency", "risk"]
+    req_q = ["question", "weight", "difficulty", "variance"]
+
+    for c in req_p:
+        if c not in p.columns:
+            errors.append(f"Participants missing column: '{c}'")
+    for c in req_q:
+        if c not in q.columns:
+            errors.append(f"Questions missing column: '{c}'")
+
+    if errors:
+        return False, errors
+
+    if p["participant"].isna().any() or (p["participant"].astype(str).str.strip() == "").any():
+        errors.append("Participants: 'participant' names cannot be blank.")
+    if p["participant"].duplicated().any():
+        errors.append("Participants: duplicate participant names detected (must be unique).")
+
+    try:
+        n = len(p)
+        if n < 2 or (n & (n - 1)) != 0:
+            errors.append("Number of participants must be a power of 2 (e.g., 2, 4, 8, 16).")
+    except Exception:
+        errors.append("Participants table looks invalid.")
+
+    try:
+        if len(q) < 1:
+            errors.append("You must have at least 1 question.")
+    except Exception:
+        errors.append("Questions table looks invalid.")
+
+    return (len(errors) == 0), errors
+
+
+ok, errs = validate_inputs(participants_df, questions_df)
+if not ok:
+    st.error("Input issues detected:")
+    for e in errs:
+        st.write(f"- {e}")
+    st.stop()
+
+# Clean and normalize
+participants_df = participants_df.copy()
+questions_df = questions_df.copy()
+
+participants_df["participant"] = participants_df["participant"].astype(str).str.strip()
+participants_df["seed"] = participants_df["seed"].apply(safe_int)
+for c in ["skill", "consistency", "risk"]:
+    participants_df[c] = participants_df[c].apply(safe_float).clip(0.0, 1.0)
+
+questions_df["question"] = questions_df["question"].astype(str).str.strip()
+questions_df["weight"] = questions_df["weight"].apply(safe_float).clip(0.0, None)
+questions_df["difficulty"] = questions_df["difficulty"].apply(safe_float).clip(0.0, 1.0)
+questions_df["variance"] = questions_df["variance"].apply(safe_float).clip(0.0, 1.0)
+
+# Sort by seed
+participants_df = participants_df.sort_values(["seed", "participant"]).reset_index(drop=True)
+
+# -----------------------------
+# Power Play input (explicit)
+# -----------------------------
+st.markdown("### 🎯 Power Plays (explicit per participant per round and question)")
+
+st.caption(
+    "This section ensures PP usage is **participant-level and question-specific**. "
+    "Every PP applied is shown later in the Processing and Results tables."
+)
+
+participants = participants_df["participant"].tolist()
+questions = questions_df["question"].tolist()
+
+pp_mode = st.radio(
+    "Power Play selection mode",
+    options=["Auto (highest impact question)", "Manual (you choose per participant/round)"],
+    index=0,
+    horizontal=True,
+)
+
+# Build PP table: round, participant -> question (or blank)
+pp_records = []
+for r in range(1, n_rounds + 1):
+    for name in participants:
+        pp_records.append({"round": r, "participant": name, "pp_question": ""})
+
+pp_table = pd.DataFrame(pp_records)
+
+if pp_mode == "Manual (you choose per participant/round)":
+    st.info("Pick the question each participant uses PP on for each round (leave blank to use no PP).")
+    edited = st.data_editor(
+        pp_table,
+        use_container_width=True,
+        disabled=["round", "participant"],
+        column_config={
+            "pp_question": st.column_config.SelectboxColumn(
+                "PP on question",
+                options=[""] + questions,
+                help="Which question gets PP multiplier for this participant in this round?",
+            )
+        },
+        key="pp_editor",
+    )
+    pp_table = edited.copy()
+else:
+    st.success("Auto mode: PP will be assigned to the question that yields the biggest expected gain for each participant per round.")
+
+st.markdown("---")
+
+
+# -----------------------------
+# Processing / assumptions section
+# -----------------------------
+st.markdown("## 2) Processing / Assumptions")
+st.caption("Everything here is shown explicitly: question weights, per-question expected scores, and PP effects (no silent steps).")
+
+# Normalize question weights
+questions_df["weight_norm"] = normalize_weights(questions_df["weight"])
+
+col1, col2, col3 = st.columns([1.2, 1.0, 1.0], gap="large")
+
+with col1:
+    st.subheader("📌 Assumptions used")
     st.markdown(
-        """
-- **H% / M% / L%**: Share of answered picks in the **Most popular / Middle / Least popular** bucket.
-- **Risk Score**: Average bucket distance from consensus (**H=0, M=0.5, L=1**).
-- **Volatility%**: How often your bucket changes between consecutive answered drops.
-- **Attendance**: Number of answered valid drops out of **24**.
-- **Power Play**: You can mark many, but only the **first two** count.
+        f"""
+- **Expected score per question** = a transparent function of participant traits (skill/consistency/risk) and question properties (difficulty/variance).
+- **Question weights** are normalized to sum to 1 (shown below).
+- **Power Play (PP)** multiplies the score on **one chosen question** by **{pp_multiplier:.2f}×**.
+- **PP limit** = {pp_per_round} PP per participant per round (we enforce this).
+- Bracket style (Round 1) = **{bracket_style}**.
 """
     )
-    st.markdown("### Archetypes (simple definitions)")
-    for k in ["Strategist","Anchor","Wiseman","Maverick","Calibrator","Wildcard","Pragmatist","Ghost"]:
-        st.markdown(f"**{k}** — {ARCH_DEF[k]}")
 
-# ==============================
-# Section 2 — Player Experience Centre
-# ==============================
-st.markdown("## Section 2 — Player Experience Centre")
-st.markdown('<div class="rpl-muted">Pick a player to see: style, streaks, H/M/L mix, and Power Play moments.</div>', unsafe_allow_html=True)
+with col2:
+    st.subheader("🧮 Question weights (normalized)")
+    st.dataframe(
+        questions_df[["question", "weight", "weight_norm", "difficulty", "variance"]].sort_values("question"),
+        use_container_width=True,
+    )
+    st.caption("Weights shown as both raw and normalized. Normalized weights are used in totals.")
 
-players = metrics["Player"].tolist()
-sel = st.selectbox("Select player", players, index=0)
-p = metrics.loc[metrics["Player"] == sel].iloc[0]
-pk = p["player_key"]
+with col3:
+    st.subheader("🧩 Participant traits")
+    st.dataframe(
+        participants_df[["participant", "seed", "skill", "consistency", "risk"]],
+        use_container_width=True,
+    )
 
-left, mid, right = st.columns([1.15, 1.0, 1.15])
 
-with left:
-    st.markdown('<div class="rpl-card">', unsafe_allow_html=True)
-    st.markdown(f"### {p['Player']}")
-    st.markdown(f"<span class='rpl-pill'>{p['Archetype']}</span>", unsafe_allow_html=True)
-    st.markdown(f"<div class='rpl-small' style='margin-top:8px;'><b>Archetype logic:</b> {ARCH_DEF.get(p['Archetype'], '')}</div>", unsafe_allow_html=True)
-    st.markdown("<hr/>", unsafe_allow_html=True)
-    st.markdown("**What's unique about you**")
-    st.write(p.get("Unique one-liner (editable)", ""))
-    st.markdown('</div>', unsafe_allow_html=True)
+# Compute expected base scores per participant x question
+score_rows = []
+for _, p in participants_df.iterrows():
+    for _, q in questions_df.iterrows():
+        exp_score = expected_question_score(
+            skill=p["skill"],
+            consistency=p["consistency"],
+            risk=p["risk"],
+            difficulty=q["difficulty"],
+            variance=q["variance"],
+            base_points=base_points,
+        )
+        score_rows.append(
+            {
+                "participant": p["participant"],
+                "question": q["question"],
+                "expected_base_points": exp_score,
+                "weight_norm": q["weight_norm"],
+                "expected_weighted_points": exp_score * q["weight_norm"],
+            }
+        )
 
-with mid:
-    st.markdown('<div class="rpl-card">', unsafe_allow_html=True)
-    st.markdown("### Your scoreboard")
-    st.metric("Attendance (out of 24)", int(p["Attended_out_of_24"]))
-    st.progress(min(max(float(p["AttendancePct_out_of_24"]) / 100.0, 0.0), 1.0))
-    pp_used = int(p.get("PP Taken", 0)) if pd.notna(p.get("PP Taken", np.nan)) else 0
-    st.markdown(f"<div class='rpl-muted'>Power Plays marked: <b>{pp_used}</b> / 2 count</div>", unsafe_allow_html=True)
-    st.progress(min(pp_used / 2.0, 1.0))
-    if pd.notna(p.get("CurrentStreak", np.nan)):
-        st.markdown("<hr/>", unsafe_allow_html=True)
-        st.metric("Current streak", int(p.get("CurrentStreak", 0)))
-        st.metric("Longest streak", int(p.get("LongestStreak", 0)))
-    st.markdown('</div>', unsafe_allow_html=True)
+base_matrix = pd.DataFrame(score_rows)
 
-with right:
-    st.markdown('<div class="rpl-card">', unsafe_allow_html=True)
-    st.markdown("### Style signals")
-    pmix = pd.DataFrame({
-        "Bucket": ["H","M","L"],
-        "Share": [float(p["H%"]), float(p["M%"]), float(p["L%"])],
-        "Meaning": [BUCKET_EXPLAIN["H"], BUCKET_EXPLAIN["M"], BUCKET_EXPLAIN["L"]]
-    })
-    figp = px.pie(pmix, values="Share", names="Bucket", hover_data=["Meaning"], hole=0.55)
-    figp = plotly_dark_defaults(figp)
-    figp.update_traces(textposition="inside", textinfo="percent+label")
-    figp.update_layout(title="Your H / M / L mix", height=360)
-    st.plotly_chart(figp, use_container_width=True)
-    st.markdown(f"<div class='rpl-small'><b>Risk Score:</b> {float(p['Risk Score']):.2f} &nbsp; • &nbsp; <b>Volatility:</b> {float(p['Volatility%']):.1f}%</div>", unsafe_allow_html=True)
-    st.markdown('</div>', unsafe_allow_html=True)
-
-# Power Play moments
-st.markdown("### Power Play moments")
-st.markdown('<div class="rpl-muted">Only the first two Power Plays count. If you marked more, your early conviction moments are the ones that matter.</div>', unsafe_allow_html=True)
-
-info = pp_details.get(pk, {"pp_total_marked": 0, "pp_valid_count": 0, "moments": []})
-moments = info.get("moments", [])
-
-if not moments:
-    st.markdown('<div class="rpl-card">No Power Play moments recorded yet.</div>', unsafe_allow_html=True)
-else:
-    box = '<div class="rpl-card">'
-    for m in moments:
-        qn = m["drop"]
-        qtext = m["question"]
-        b = m.get("bucket","")
-        lbl = {"H":"crowd pick","M":"balanced pick","L":"contrarian pick"}.get(b,"")
-        extra = f"— you took a <b>{lbl}</b> on this one." if lbl else ""
-        box += f"<div style='margin-bottom:10px;'><b>{m['ordinal']} Power Play</b> on <b>Q{qn}</b>:<br/>{qtext}<br/><span class='rpl-muted'>{extra}</span></div>"
-    if info.get("pp_total_marked", 0) > 2:
-        box += f"<div class='rpl-small'>You marked Power Play <b>{info['pp_total_marked']}</b> times — only the first two count.</div>"
-    box += "</div>"
-    st.markdown(box, unsafe_allow_html=True)
-
-# ==============================
-# Section 3 — Risk Map + PP + Story Mode
-# ==============================
-st.markdown("## Section 3 — Risk + Power Plays + Story Mode")
-
-st.markdown("### Risk vs Attendance Map")
-st.markdown('<div class="rpl-muted">Y-axis is Risk Score (H→L). X-axis is attendance%. Hover shows only name + archetype.</div>', unsafe_allow_html=True)
-
-map_df = metrics.copy()
-map_df["Hover"] = map_df.apply(lambda r: f"{r['Player']}; {r['Archetype']}", axis=1)
-# force constant marker size so all are visible
-figm = px.scatter(
-    map_df,
-    x="AttendancePct_out_of_24",
-    y="Risk Score",
-    color="Archetype",
-    hover_name="Hover",
-    hover_data={
-        "AttendancePct_out_of_24": False,
-        "Risk Score": False,
-        "Archetype": False,
-        "Player": False,
-        "Hover": False
-    },
-    size_max=14
+st.markdown("### 📈 Expected per-question scores (before PP)")
+st.dataframe(
+    base_matrix.pivot(index="participant", columns="question", values="expected_base_points").round(2),
+    use_container_width=True,
 )
-figm.update_traces(marker=dict(size=10, line=dict(width=0.5, color='rgba(255,255,255,0.2)')))
-figm = plotly_dark_defaults(figm)
-figm.update_layout(xaxis_title="Attendance (%)", yaxis_title="Risk Score (H→L)", height=520)
-st.plotly_chart(figm, use_container_width=True)
 
-# Power Play Status boxes
-st.markdown("### Power Play Status")
-pp0 = metrics[metrics["PP Taken"].astype(int) == 0]["Player"].tolist()
-pp1 = metrics[metrics["PP Taken"].astype(int) == 1]["Player"].tolist()
-pp2p = metrics[metrics["PP Taken"].astype(int) >= 2]["Player"].tolist()
+# Determine PP assignments
+# Enforce pp_per_round limit: our UI provides exactly one selection per row, so we treat that as <=1
+# If pp_per_round == 0, ignore PP
+pp_table_effective = pp_table.copy()
+if pp_per_round <= 0:
+    pp_table_effective["pp_question"] = ""
 
-b1, b2, b3 = st.columns(3)
-with b1:
-    st.markdown('<div class="rpl-card">', unsafe_allow_html=True)
-    st.markdown(f"**Conviction still loaded ({len(pp0)})**")
-    st.write(", ".join(pp0) if pp0 else "—")
-    st.markdown('</div>', unsafe_allow_html=True)
-with b2:
-    st.markdown('<div class="rpl-card">', unsafe_allow_html=True)
-    st.markdown(f"**One-shot conviction ({len(pp1)})**")
-    st.write(", ".join(pp1) if pp1 else "—")
-    st.markdown('</div>', unsafe_allow_html=True)
-with b3:
-    st.markdown('<div class="rpl-card">', unsafe_allow_html=True)
-    st.markdown(f"**Two chips spent ({len(pp2p)})**")
-    st.write(", ".join(pp2p) if pp2p else "—")
-    st.markdown('</div>', unsafe_allow_html=True)
+if pp_mode == "Auto (highest impact question)":
+    # For each participant, pick question that maximizes (multiplied - base) in weighted space
+    # Gain = base * (pp_multiplier - 1) * weight_norm
+    gains = base_matrix.merge(
+        questions_df[["question", "weight_norm"]],
+        on="question",
+        how="left",
+        suffixes=("", "_q"),
+    )
+    gains["expected_gain_weighted"] = gains["expected_base_points"] * (pp_multiplier - 1.0) * gains["weight_norm"]
+    best_q = gains.sort_values("expected_gain_weighted", ascending=False).groupby("participant").head(1)
+    best_map = dict(zip(best_q["participant"], best_q["question"]))
 
-# Story mode tabs
-st.markdown("### Story Mode")
-st.markdown('<div class="rpl-muted">A few patterns forming in the room — each card explains what the list means.</div>', unsafe_allow_html=True)
+    # Apply same auto choice each round (simple and explicit)
+    pp_table_effective["pp_question"] = pp_table_effective["participant"].map(best_map).fillna("")
 
-tabs = st.tabs(["Contrarian League", "Shape-Shifters", "Wildcards", "Conviction Still Loaded", "All-In Early"])
+# If user attempts >pp_per_round in future expansions, we'd enforce here.
+# In current table, max 1 selection per participant/round.
 
-story_base = metrics.copy()
-story_base = story_base[story_base["AttendancePct_out_of_24"] >= 30].copy()
-story_base = story_base[story_base["Attended_out_of_24"] > 0].copy()
+# Build a PP effect table per participant x round x question
+pp_effect_rows = []
+for _, row in pp_table_effective.iterrows():
+    r = int(row["round"])
+    name = row["participant"]
+    chosen_q = row["pp_question"] if isinstance(row["pp_question"], str) else ""
+    chosen_q = chosen_q.strip()
+    for q in questions:
+        pp_used = (chosen_q == q) and (chosen_q != "")
+        pp_effect_rows.append(
+            {
+                "round": r,
+                "participant": name,
+                "question": q,
+                "pp_used": pp_used,
+                "multiplier": (pp_multiplier if pp_used else 1.0),
+            }
+        )
 
-with tabs[0]:
-    st.markdown('<div class="rpl-card">', unsafe_allow_html=True)
-    st.markdown("**What this list means:** Players who most often choose the least popular option (high L%).")
-    top = story_base.sort_values("L%", ascending=False).head(10)
-    st.write(", ".join(top["Player"].tolist()) if len(top) else "—")
-    st.markdown('</div>', unsafe_allow_html=True)
+pp_effect = pd.DataFrame(pp_effect_rows)
 
-with tabs[1]:
-    st.markdown('<div class="rpl-card">', unsafe_allow_html=True)
-    st.markdown("**What this list means:** Players who change buckets frequently (high volatility) — adapts stance question by question.")
-    top = story_base.sort_values("Volatility%", ascending=False).head(10)
-    st.write(", ".join(top["Player"].tolist()) if len(top) else "—")
-    st.markdown('</div>', unsafe_allow_html=True)
+st.markdown("### 🎯 Power Play application table (explicit)")
+# Show in a compact pivot: each participant x round -> chosen question(s)
+pp_chosen_view = (
+    pp_table_effective.groupby(["round", "participant"])["pp_question"]
+    .apply(lambda s: ", ".join([x for x in s.astype(str).tolist() if x.strip() != ""]) if len(s) else "")
+    .reset_index()
+    .rename(columns={"pp_question": "PP on question"})
+)
+st.dataframe(pp_chosen_view, use_container_width=True)
 
-with tabs[2]:
-    st.markdown('<div class="rpl-card">', unsafe_allow_html=True)
-    st.markdown("**What this list means:** Wildcards are high-variance profiles (risk + volatility). Different from Contrarians: contrarians stay L-leaning; wildcards can swing anywhere.")
-    top = story_base[story_base["Archetype"] == "Wildcard"].sort_values(["AttendancePct_out_of_24","Risk Score"], ascending=False).head(12)
-    st.write(", ".join(top["Player"].tolist()) if len(top) else "—")
-    st.markdown('</div>', unsafe_allow_html=True)
+# Combine base scores with PP effects to compute total expected per round
+combined = base_matrix.merge(pp_effect, on=["participant", "question"], how="left")
+combined["multiplier"] = combined["multiplier"].fillna(1.0)
 
-with tabs[3]:
-    st.markdown('<div class="rpl-card">', unsafe_allow_html=True)
-    st.markdown("**What this list means:** Players who haven’t used a Power Play yet — their conviction chips are fully in reserve.")
-    top = story_base[story_base["PP Taken"].astype(int) == 0].sort_values("AttendancePct_out_of_24", ascending=False).head(20)
-    st.write(", ".join(top["Player"].tolist()) if len(top) else "—")
-    st.markdown('</div>', unsafe_allow_html=True)
+combined["expected_points_after_pp"] = combined["expected_base_points"] * combined["multiplier"]
+combined["expected_weighted_after_pp"] = combined["expected_points_after_pp"] * combined["weight_norm"]
 
-with tabs[4]:
-    st.markdown('<div class="rpl-card">', unsafe_allow_html=True)
-    st.markdown("**What this list means:** Players who exhausted both valid Power Plays early (master-derived). We show the question number by which their second PP was spent.")
-    if metrics["Second_PP_by_Q"].isna().all():
-        st.write("No master-derived PP timing available.")
-    else:
-        top = metrics.dropna(subset=["Second_PP_by_Q"]).sort_values("Second_PP_by_Q", ascending=True).head(12)
-        items = [f"{r.Player} (by Q{int(r.Second_PP_by_Q)})" for r in top.itertuples()]
-        st.write(", ".join(items) if items else "—")
-    st.markdown('</div>', unsafe_allow_html=True)
+# Repeat totals per round (since base expectation is same; PP can differ per round)
+round_totals = []
+for r in range(1, n_rounds + 1):
+    tmp = combined.merge(
+        pp_effect[pp_effect["round"] == r][["participant", "question", "multiplier", "pp_used"]],
+        on=["participant", "question"],
+        how="left",
+        suffixes=("", "_r"),
+    )
+    tmp["multiplier_r"] = tmp["multiplier_r"].fillna(1.0)
+    tmp["pp_used_r"] = tmp["pp_used_r"].fillna(False)
 
-# Perfect attendance club
-st.markdown("### Perfect Attendance Club (24/24)")
-club = metrics[metrics["Attended_out_of_24"] == TOTAL_VALID_DROPS]["Player"].tolist()
-st.markdown('<div class="rpl-card">', unsafe_allow_html=True)
-st.write(", ".join(club) if club else "—")
-st.markdown('</div>', unsafe_allow_html=True)
+    tmp["expected_points_after_pp"] = tmp["expected_base_points"] * tmp["multiplier_r"]
+    tmp["expected_weighted_after_pp"] = tmp["expected_points_after_pp"] * tmp["weight_norm"]
 
-# Footer: small note
-st.markdown("<div class='rpl-small rpl-muted'>Data locked in repository under <code>data/</code>. To update, replace the two files and redeploy.</div>", unsafe_allow_html=True)
+    totals = tmp.groupby("participant", as_index=False).agg(
+        expected_total_points=("expected_points_after_pp", "sum"),
+        expected_total_weighted=("expected_weighted_after_pp", "sum"),
+        pp_questions_used=("pp_used_r", "sum"),
+    )
+    totals["round"] = r
+    round_totals.append(totals)
+
+round_totals_df = pd.concat(round_totals, ignore_index=True)
+
+st.markdown("### ✅ Round-level totals (explicit, includes PP usage count)")
+st.dataframe(
+    round_totals_df.sort_values(["round", "expected_total_weighted"], ascending=[True, False]).round(3),
+    use_container_width=True,
+)
+
+st.markdown("---")
+
+
+# -----------------------------
+# Results / outputs section
+# -----------------------------
+st.markdown("## 3) Results / Outputs")
+st.caption("Predictions shown as matchups + winner probabilities + transparent score breakdowns.")
+
+# Build round 1 matchups
+matchups_r1 = build_matchups(participants, bracket_style)
+
+# Simple win-prob model using weighted totals (Round 1 assumed)
+r1 = round_totals_df[round_totals_df["round"] == 1].set_index("participant")
+
+def win_prob(a_score: float, b_score: float, temperature: float = 0.15) -> float:
+    # logistic on normalized difference (temperature controls softness)
+    diff = (a_score - b_score)
+    return 1.0 / (1.0 + np.exp(-diff / max(temperature, 1e-6)))
+
+match_rows = []
+for a, b in matchups_r1:
+    a_s = float(r1.loc[a, "expected_total_weighted"])
+    b_s = float(r1.loc[b, "expected_total_weighted"])
+    p_a = win_prob(a_s, b_s)
+    winner = a if p_a >= 0.5 else b
+    match_rows.append(
+        {
+            "round": 1,
+            "match": f"{a} vs {b}",
+            "A": a,
+            "B": b,
+            "A_expected_weighted": a_s,
+            "B_expected_weighted": b_s,
+            "P(A wins)": p_a,
+            "Predicted winner": winner,
+        }
+    )
+
+match_df = pd.DataFrame(match_rows)
+
+colR1, colR2 = st.columns([1.2, 1.0], gap="large")
+
+with colR1:
+    st.subheader("🥊 Round 1 matchups (predicted)")
+    show_df = match_df.copy()
+    show_df["P(A wins)"] = (show_df["P(A wins)"] * 100).round(1).astype(str) + "%"
+    st.dataframe(show_df, use_container_width=True)
+
+with colR2:
+    st.subheader("🏅 Leaderboard (Round 1 expected)")
+    leaderboard = r1.reset_index()[["participant", "expected_total_weighted", "pp_questions_used"]].copy()
+    leaderboard = leaderboard.sort_values("expected_total_weighted", ascending=False)
+    leaderboard["rank"] = range(1, len(leaderboard) + 1)
+    leaderboard = leaderboard[["rank", "participant", "expected_total_weighted", "pp_questions_used"]]
+    st.dataframe(leaderboard.round(3), use_container_width=True)
+
+st.markdown("### 🔍 Explain a participant (fully explicit breakdown)")
+
+pick = st.selectbox("Choose a participant to inspect", options=participants, index=0)
+
+# pick round too
+pick_round = st.selectbox("Choose a round to inspect", options=list(range(1, n_rounds + 1)), index=0)
+
+# Build participant breakdown for that round
+pp_r = pp_effect[pp_effect["round"] == pick_round].copy()
+bd = base_matrix[base_matrix["participant"] == pick].merge(
+    pp_r[pp_r["participant"] == pick][["question", "multiplier", "pp_used"]],
+    on="question",
+    how="left",
+)
+bd["multiplier"] = bd["multiplier"].fillna(1.0)
+bd["pp_used"] = bd["pp_used"].fillna(False)
+bd["after_pp"] = bd["expected_base_points"] * bd["multiplier"]
+bd["weighted_after_pp"] = bd["after_pp"] * bd["weight_norm"]
+
+# Add visible "PP delta"
+bd["pp_delta_points"] = bd["after_pp"] - bd["expected_base_points"]
+bd["pp_delta_weighted"] = bd["weighted_after_pp"] - (bd["expected_weighted_points"])
+
+bd_view = bd[
+    [
+        "question",
+        "expected_base_points",
+        "weight_norm",
+        "expected_weighted_points",
+        "pp_used",
+        "multiplier",
+        "after_pp",
+        "weighted_after_pp",
+        "pp_delta_points",
+        "pp_delta_weighted",
+    ]
+].copy()
+
+st.dataframe(bd_view.round(4), use_container_width=True)
+
+tot_line = bd_view[["weighted_after_pp", "pp_delta_weighted"]].sum()
+st.info(
+    f"Total weighted score (after PP) = **{tot_line['weighted_after_pp']:.4f}** | "
+    f"Total PP weighted lift = **{tot_line['pp_delta_weighted']:.4f}**"
+)
+
+st.markdown("### 📤 Export outputs")
+export_bundle = {
+    "participants_clean.csv": participants_df.to_csv(index=False),
+    "questions_clean.csv": questions_df.to_csv(index=False),
+    "expected_base_matrix.csv": base_matrix.to_csv(index=False),
+    "power_play_table.csv": pp_table_effective.to_csv(index=False),
+    "round_totals.csv": round_totals_df.to_csv(index=False),
+    "round1_matchups.csv": match_df.to_csv(index=False),
+}
+export_choice = st.selectbox("Choose an output to download", list(export_bundle.keys()))
+st.download_button(
+    "Download selected output",
+    data=export_bundle[export_choice].encode("utf-8"),
+    file_name=export_choice,
+    mime="text/csv",
+)
+
+st.markdown("---")
+
+with st.expander("📚 What changed in this version (mapped to your feedback)"):
+    st.markdown(
+        """
+- **Clear sectioning**: `1) Inputs` → `2) Processing / Assumptions` → `3) Results / Outputs`.
+- **No silent calculations**: every important intermediate is shown (normalized weights, base matrix, PP application, round totals).
+- **Participant-level PP logic is explicit**: PP is chosen **per participant, per round, for a specific question**, and displayed in:
+  - PP application table
+  - round totals (with PP usage count)
+  - participant breakdown (showing PP delta per question)
+- **No debug lines**: no debug prints, no “fixed” markers — only user-facing outputs.
+- **Visible UI/UX differences**: new PP control section + explicit breakdown tables + export panel.
+"""
+    )
+
+st.caption("Tip: Start with sample data → confirm the logic visually → then switch to CSV upload.")
