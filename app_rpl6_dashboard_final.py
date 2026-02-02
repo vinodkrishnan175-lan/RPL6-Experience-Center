@@ -2,22 +2,24 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.express as px
+import plotly.graph_objects as go
 import re, difflib
 from pathlib import Path
 
 # ===========================================
 # RPL 6 Experience Centre — Drop 33 build
 # - Metrics computed from master_data.xlsx
-# - One-liners (narratives) re-used from prior metrics file (drop25_metrics.xlsx) if present
+# - One-liners re-used from prior metrics file (drop25_metrics.xlsx) if present
 #
-# Required repo files:
-#   data/master_data.xlsx          (your updated master through Drop 33)
-# Optional repo file:
-#   data/drop25_metrics.xlsx       (used only to fetch Unique one-liner per player)
+# Required repo file:
+#   data/master_data.xlsx
+# Optional repo file (for narratives only):
+#   data/drop25_metrics.xlsx
 # ===========================================
 
 st.set_page_config(page_title="RPL 6 Experience Centre", layout="wide")
 
+# ---------- Styling ----------
 st.markdown(
     """
 <style>
@@ -59,6 +61,21 @@ h1,h2,h3,h4 { color: rgba(255,255,255,0.96) !important; }
 
 .kpi-number { color: #ffd54d; font-weight: 900; font-size: 34px; line-height: 1.05; }
 .kpi-label { color: rgba(255,255,255,0.70); font-size: 13px; margin-top: 4px; }
+
+.yellow-label { color:#ffd54d !important; font-weight:800; }
+.yellow-metric { color:#ffd54d !important; font-weight:900; font-size:34px; }
+.yellow-submetric { color:#ffd54d !important; font-weight:900; font-size:22px; }
+
+.ribbon {
+  border-radius: 14px;
+  padding: 10px 12px;
+  background: rgba(255,255,255,0.05);
+  border: 1px solid rgba(255,255,255,0.06);
+  margin-bottom: 10px;
+  color: rgba(255,255,255,0.90);
+  font-weight: 800;
+}
+
 hr { border: none; height: 1px; background: rgba(255,255,255,0.06); margin: 14px 0; }
 
 @media (max-width: 768px) {
@@ -129,6 +146,11 @@ def compute_streaks(flags):
     return longest, current
 
 def parse_master_drop_groups(raw: pd.DataFrame):
+    """
+    FIXED:
+    - Question text comes from row index 1 (your file’s question row)
+    - Drop headers are in row index 0
+    """
     row0 = raw.iloc[0].astype(str)
     starts = [(i, row0[i]) for i in range(len(row0)) if isinstance(row0[i], str) and row0[i].startswith("Drop")]
     groups = []
@@ -140,7 +162,8 @@ def parse_master_drop_groups(raw: pd.DataFrame):
         if drop_num is None or drop_num == 12:
             continue
         resp_col = start
-        q_text = raw.iloc[2, resp_col] if raw.shape[0] > 2 else f"Q{drop_num}"
+        # question row is index 1
+        q_text = raw.iloc[1, resp_col] if raw.shape[0] > 1 else f"Q{drop_num}"
         q_text = str(q_text).strip() if pd.notna(q_text) else f"Q{drop_num}"
         if width == 2:
             pp_col = None
@@ -154,11 +177,8 @@ def parse_master_drop_groups(raw: pd.DataFrame):
     return groups, max_drop
 
 def classify_archetype(att_pct, H_pct, M_pct, L_pct, vol_pct, risk, pp_total):
-    # Ghost first
     if att_pct < 25:
         return "Ghost"
-
-    # Primary strong signals
     if (L_pct >= 30) and (risk >= 0.65):
         return "Maverick"
     if (vol_pct >= 60) and (risk >= 0.60):
@@ -169,12 +189,8 @@ def classify_archetype(att_pct, H_pct, M_pct, L_pct, vol_pct, risk, pp_total):
         return "Calibrator"
     if (vol_pct <= 25) and (risk <= 0.35):
         return "Anchor"
-
-    # Strategist: high attendance + uses PP (even 1) as leverage
     if (att_pct >= 80) and (pp_total >= 1):
         return "Strategist"
-
-    # Default
     return "Pragmatist"
 
 # ------------------- Load data -------------------
@@ -189,6 +205,7 @@ if not master_path.exists():
 raw_master = pd.read_excel(master_path, sheet_name="Summary", header=None)
 groups, last_drop = parse_master_drop_groups(raw_master)
 TOTAL_VALID_DROPS = len(groups)
+q_text_by_drop = {g["drop"]: g["question"] for g in groups}
 
 # Optional narratives
 one_liners = {}
@@ -208,9 +225,10 @@ if narr_path.exists():
         one_liners = {}
 
 # Build player list from master col C (index 2)
+# FIXED: start at row index 2 (so Ananth doesn't get skipped)
 players = []
 row_map = {}
-for rr in range(3, raw_master.shape[0]):
+for rr in range(2, raw_master.shape[0]):
     nm = raw_master.iloc[rr, 2] if raw_master.shape[1] > 2 else None
     if nm is None or (isinstance(nm, float) and np.isnan(nm)):
         continue
@@ -226,9 +244,6 @@ players = sorted(list(dict.fromkeys(players)), key=lambda x: x.lower())
 rows = []
 pp_details = {}
 valid_pp_second = {}
-
-# quick lookup for question text
-q_text_by_drop = {g["drop"]: g["question"] for g in groups}
 
 for name in players:
     pk = clean_name(name)
@@ -274,7 +289,6 @@ for name in players:
         H_pct = M_pct = L_pct = 0.0
         risk = 0.0
 
-    # Volatility: % of bucket changes between consecutive answered drops
     if len(bucket_seq) <= 1:
         vol = 0.0
     else:
@@ -283,7 +297,6 @@ for name in players:
 
     longest, current = compute_streaks(answered_flags)
 
-    # PP moments: first 2 only
     pp_total = len(pp_yes_drops)
     pp_valid = pp_yes_drops[:2]
     moments = []
@@ -370,57 +383,12 @@ with c8: st.markdown(f"<div class='kpi-number'>{room_H:.1f}%</div><div class='kp
 
 st.markdown("<hr/>", unsafe_allow_html=True)
 
-with st.expander("Metric explainer (tap to open)", expanded=False):
-    st.markdown(
-        """
-- **H% / M% / L%**: Share of answered picks in the Most popular / Middle / Least popular bucket.
-- **Risk Score**: Average distance from consensus (**H=0, M=0.5, L=1**).
-- **Volatility%**: % of answered drops where your bucket changed vs previous answered drop.
-- **Attendance**: Answered valid drops out of the total valid drops so far.
-- **Power Play**: Only first **two** count.
-"""
-    )
-    st.markdown("### Archetypes (simple definitions)")
-    for k in ["Strategist","Anchor","Wiseman","Maverick","Calibrator","Wildcard","Pragmatist","Ghost"]:
-        st.markdown(f"**{k}** — {ARCH_DEF[k]}")
-
-cc1, cc2 = st.columns([1.2, 1.0])
-
-with cc1:
-    H_overall = float(((metrics["H%"]/100.0) * metrics["Attended"]).sum())
-    M_overall = float(((metrics["M%"]/100.0) * metrics["Attended"]).sum())
-    L_overall = float(((metrics["L%"]/100.0) * metrics["Attended"]).sum())
-    mix_df = pd.DataFrame({
-        "Bucket": ["H", "M", "L"],
-        "Count": [H_overall, M_overall, L_overall],
-        "Meaning": [BUCKET_EXPLAIN["H"], BUCKET_EXPLAIN["M"], BUCKET_EXPLAIN["L"]],
-    })
-    fig = px.pie(mix_df, values="Count", names="Bucket", hole=0.55, hover_data=["Meaning"])
-    fig.update_traces(textposition="inside", textinfo="percent+label")
-    fig.update_layout(legend=dict(orientation="h", y=-0.18, x=0.2))
-    fig = plotly_dark(fig)
-    fig.update_layout(title="Overall H / M / L mix (weighted by participation)", height=420)
-    st.plotly_chart(fig, use_container_width=True)
-
-with cc2:
-    arch_counts = metrics["Archetype"].value_counts().reset_index()
-    arch_counts.columns = ["Archetype", "Players"]
-    mapping = metrics.groupby("Archetype")["Player"].apply(lambda x: ", ".join(x.tolist())).to_dict()
-    arch_counts["PlayersList"] = arch_counts["Archetype"].map(mapping)
-    fig2 = px.bar(arch_counts, x="Archetype", y="Players", text="Players")
-    fig2.update_traces(
-        hovertemplate="%{x}<br>%{y} players<br><br>%{customdata[0]}",
-        customdata=arch_counts[["PlayersList"]].values
-    )
-    fig2 = plotly_dark(fig2)
-    fig2.update_layout(title="Archetype distribution (hover to see names)", height=420)
-    st.plotly_chart(fig2, use_container_width=True)
-
 # ------------------- Player Experience Centre -------------------
 st.markdown("## Player Experience Centre")
 st.markdown('<div class="rpl-muted">Pick a player to see: style, streaks, H/M/L mix, and Power Play moments.</div>', unsafe_allow_html=True)
 
-sel = st.selectbox("Select player", metrics["Player"].tolist(), index=0)
+st.markdown("<div class='yellow-label'>Select player</div>", unsafe_allow_html=True)
+sel = st.selectbox("", metrics["Player"].tolist(), index=0, label_visibility="collapsed")
 p = metrics.loc[metrics["Player"] == sel].iloc[0]
 pk = p["player_key"]
 
@@ -439,29 +407,69 @@ with l:
 with m:
     st.markdown('<div class="rpl-card">', unsafe_allow_html=True)
     st.markdown("### Your scoreboard")
-    st.metric(f"Attendance (out of {TOTAL_VALID_DROPS})", int(p["Attended"]))
+    st.markdown(f"<div class='yellow-metric'>{int(p['Attended'])}</div><div class='yellow-label'>Attendance (out of {TOTAL_VALID_DROPS})</div>", unsafe_allow_html=True)
     st.progress(min(max(float(p["AttendancePct"]) / 100.0, 0.0), 1.0))
-    st.markdown(f"<div class='rpl-muted'>Power Plays marked: <b>{int(p['PP Taken'])}</b> / 2 count</div>", unsafe_allow_html=True)
+
+    st.markdown(f"<div class='yellow-label' style='margin-top:10px;'>Power Plays marked: {int(p['PP Taken'])} / 2 count</div>", unsafe_allow_html=True)
     st.progress(min(int(p["PP Taken"]) / 2.0, 1.0))
+
     st.markdown("<hr/>", unsafe_allow_html=True)
-    st.metric("Current streak", int(p["CurrentStreak"]))
-    st.metric("Longest streak", int(p["LongestStreak"]))
+    st.markdown(f"<div class='yellow-submetric'>{int(p['CurrentStreak'])}</div><div class='yellow-label'>Current streak</div>", unsafe_allow_html=True)
+    st.markdown(f"<div class='yellow-submetric' style='margin-top:10px;'>{int(p['LongestStreak'])}</div><div class='yellow-label'>Longest streak</div>", unsafe_allow_html=True)
     st.markdown("</div>", unsafe_allow_html=True)
 
 with r:
     st.markdown('<div class="rpl-card">', unsafe_allow_html=True)
     st.markdown("### Style signals")
-    pmix = pd.DataFrame({
-        "Bucket": ["H", "M", "L"],
-        "Share": [float(p["H%"]), float(p["M%"]), float(p["L%"])],
-        "Meaning": [BUCKET_EXPLAIN["H"], BUCKET_EXPLAIN["M"], BUCKET_EXPLAIN["L"]],
-    })
-    figp = px.pie(pmix, values="Share", names="Bucket", hole=0.55, hover_data=["Meaning"])
-    figp.update_traces(textposition="inside", textinfo="percent+label")
-    figp = plotly_dark(figp)
-    figp.update_layout(title="Your H / M / L mix", height=360)
-    st.plotly_chart(figp, use_container_width=True)
-    st.markdown(f"<div class='rpl-small'><b>Risk Score:</b> {float(p['Risk Score']):.2f} &nbsp; • &nbsp; <b>Volatility:</b> {float(p['Volatility%']):.1f}%</div>", unsafe_allow_html=True)
+
+    H = float(p["H%"]); Mv = float(p["M%"]); L = float(p["L%"])
+
+    # stacked vertical bar
+    fig = go.Figure()
+    fig.add_trace(go.Bar(x=[""], y=[L], name="L", marker=dict(color="#34d399")))
+    fig.add_trace(go.Bar(x=[""], y=[Mv], name="M", marker=dict(color="#ef4444")))
+    fig.add_trace(go.Bar(x=[""], y=[H], name="H", marker=dict(color="#6366f1")))
+    fig.update_layout(barmode="stack", showlegend=False, height=380)
+    fig = plotly_dark(fig)
+    fig.update_yaxes(range=[0, 100], title="")
+    fig.update_xaxes(showticklabels=False, title="")
+
+    # arrows + labels on RHS using annotations (paper coords)
+    # We'll place them at approx segment midpoints
+    yL = L/200
+    yM = (L + Mv/2)/100
+    yH = (L + Mv + H/2)/100
+
+    def anno(y, text):
+        fig.add_annotation(
+            x=1.04, y=y, xref="paper", yref="paper",
+            text=text,
+            showarrow=True, arrowhead=2, ax=30, ay=0,
+            font=dict(color="#ffd54d", size=12),
+            arrowcolor="rgba(255,255,255,0.40)"
+        )
+
+    anno(yH, f"H: crowd picks — {H:.0f}%")
+    anno(yM, f"M: middle picks — {Mv:.0f}%")
+    anno(yL, f"L: contrarian picks — {L:.0f}%")
+
+    st.plotly_chart(fig, use_container_width=True)
+
+    st.markdown(
+        f"""
+<div style="display:flex; gap:18px; margin-top:6px;">
+  <div>
+    <div class="yellow-label">🎯 Risk Score</div>
+    <div class="yellow-submetric">{float(p['Risk Score']):.2f}</div>
+  </div>
+  <div>
+    <div class="yellow-label">🌊 Volatility</div>
+    <div class="yellow-submetric">{float(p['Volatility%']):.1f}%</div>
+  </div>
+</div>
+""",
+        unsafe_allow_html=True
+    )
     st.markdown("</div>", unsafe_allow_html=True)
 
 # ------------------- Power Play moments -------------------
@@ -475,28 +483,24 @@ moments = info.get("moments", [])
 if pp_total == 0:
     st.markdown('<div class="rpl-card">No Power Play moments recorded yet.</div>', unsafe_allow_html=True)
 else:
-    if not moments:
-        st.markdown('<div class="rpl-card">Power Plays detected, but could not map them to master questions.</div>', unsafe_allow_html=True)
-    else:
-        box = "<div class='rpl-card'>"
-        for mo in moments:
-            lbl = {"H": "crowd pick", "M": "balanced pick", "L": "contrarian pick"}.get(mo.get("bucket", ""), "")
-            extra = f"— you took a <b>{lbl}</b> on this one." if lbl else ""
-            box += (
-                f"<div style='margin-bottom:12px;'>"
-                f"<b>{mo['ordinal']} Power Play</b> on <b>Q{mo['drop']}</b>:<br/>"
-                f"{mo['question']}<br/>"
-                f"<span class='rpl-muted'>{extra}</span>"
-                f"</div>"
-            )
-        if pp_total > 2:
-            box += f"<div class='rpl-small rpl-muted'>You marked Power Play <b>{pp_total}</b> times — only the first two count.</div>"
-        box += "</div>"
-        st.markdown(box, unsafe_allow_html=True)
+    box = "<div class='rpl-card'>"
+    for mo in moments:
+        lbl = {"H": "crowd pick", "M": "balanced pick", "L": "contrarian pick"}.get(mo.get("bucket", ""), "")
+        extra = f"— you took a <b>{lbl}</b> on this one." if lbl else ""
+        box += (
+            f"<div style='margin-bottom:12px;'>"
+            f"<b>{mo['ordinal']} Power Play</b> on <b>Q{mo['drop']}</b>:<br/>"
+            f"{mo['question']}<br/>"
+            f"<span class='rpl-muted'>{extra}</span>"
+            f"</div>"
+        )
+    if pp_total > 2:
+        box += f"<div class='rpl-small rpl-muted'>You marked Power Play <b>{pp_total}</b> times — only the first two count.</div>"
+    box += "</div>"
+    st.markdown(box, unsafe_allow_html=True)
 
 # ------------------- Risk + Story Mode -------------------
 st.markdown("## Risk + Power Plays + Story Mode")
-
 st.markdown("### Risk vs Attendance Map")
 st.markdown('<div class="rpl-muted">Y-axis: Risk Score (H→L). X-axis: Attendance%. Hover: name + archetype only.</div>', unsafe_allow_html=True)
 
@@ -515,70 +519,32 @@ figm = plotly_dark(figm)
 figm.update_layout(height=520)
 st.plotly_chart(figm, use_container_width=True)
 
+# ------------------- Power Play Status (with ribbon text) -------------------
 st.markdown("### Power Play Status")
+
 pp0 = metrics[metrics["PP Taken"] == 0]["Player"].tolist()
 pp1 = metrics[metrics["PP Taken"] == 1]["Player"].tolist()
 pp2p = metrics[metrics["PP Taken"] >= 2]["Player"].tolist()
 
 b1, b2, b3 = st.columns(3)
+
 with b1:
     st.markdown('<div class="rpl-card">', unsafe_allow_html=True)
+    st.markdown('<div class="ribbon">Both Power Plays not used yet</div>', unsafe_allow_html=True)
     st.markdown(f"**Conviction still loaded ({len(pp0)})**")
     st.write(", ".join(pp0) if pp0 else "—")
     st.markdown("</div>", unsafe_allow_html=True)
+
 with b2:
     st.markdown('<div class="rpl-card">', unsafe_allow_html=True)
+    st.markdown('<div class="ribbon">Only 1 Power Play used so far</div>', unsafe_allow_html=True)
     st.markdown(f"**One-shot conviction ({len(pp1)})**")
     st.write(", ".join(pp1) if pp1 else "—")
     st.markdown("</div>", unsafe_allow_html=True)
+
 with b3:
     st.markdown('<div class="rpl-card">', unsafe_allow_html=True)
+    st.markdown('<div class="ribbon">Both Power Plays exhausted</div>', unsafe_allow_html=True)
     st.markdown(f"**Two chips spent ({len(pp2p)})**")
     st.write(", ".join(pp2p) if pp2p else "—")
     st.markdown("</div>", unsafe_allow_html=True)
-
-st.markdown("### Story Mode")
-tabs = st.tabs(["Contrarian League", "Most Volatile", "Wildcards", "Conviction Still Loaded", "All-In Early"])
-story = metrics[(metrics["AttendancePct"] >= 30) & (metrics["Attended"] > 0)].copy()
-
-with tabs[0]:
-    st.markdown('<div class="rpl-card">', unsafe_allow_html=True)
-    st.markdown("**What this list means:** Players who most often choose the least popular option (high L%).")
-    top = story.sort_values("L%", ascending=False).head(10)
-    st.write(", ".join(top["Player"].tolist()) if len(top) else "—")
-    st.markdown("</div>", unsafe_allow_html=True)
-
-with tabs[1]:
-    st.markdown('<div class="rpl-card">', unsafe_allow_html=True)
-    st.markdown("**What this list means:** Players who change buckets frequently (high volatility).")
-    top = story.sort_values("Volatility%", ascending=False).head(10)
-    st.write(", ".join(top["Player"].tolist()) if len(top) else "—")
-    st.markdown("</div>", unsafe_allow_html=True)
-
-with tabs[2]:
-    st.markdown('<div class="rpl-card">', unsafe_allow_html=True)
-    st.markdown("**What this list means:** Wildcards are high-variance profiles (risk + volatility). Different from Contrarians: contrarians stay L-leaning; wildcards can swing anywhere.")
-    top = story[story["Archetype"] == "Wildcard"].sort_values(["AttendancePct", "Risk Score"], ascending=False).head(12)
-    st.write(", ".join(top["Player"].tolist()) if len(top) else "—")
-    st.markdown("</div>", unsafe_allow_html=True)
-
-with tabs[3]:
-    st.markdown('<div class="rpl-card">', unsafe_allow_html=True)
-    st.markdown("**What this list means:** Players who haven’t used a Power Play yet — both chips still available.")
-    top = story[story["PP Taken"] == 0].sort_values("AttendancePct", ascending=False).head(20)
-    st.write(", ".join(top["Player"].tolist()) if len(top) else "—")
-    st.markdown("</div>", unsafe_allow_html=True)
-
-with tabs[4]:
-    st.markdown('<div class="rpl-card">', unsafe_allow_html=True)
-    st.markdown("**What this list means:** Players who exhausted both valid Power Plays early — we show the question by which their 2nd PP was used.")
-    tmp = metrics.dropna(subset=["Second_PP_by_Q"]).sort_values("Second_PP_by_Q", ascending=True).head(12)
-    items = [f"{rr.Player} (by Q{int(rr.Second_PP_by_Q)})" for rr in tmp.itertuples()]
-    st.write(", ".join(items) if items else "—")
-    st.markdown("</div>", unsafe_allow_html=True)
-
-st.markdown(f"### Perfect Attendance Club ({TOTAL_VALID_DROPS}/{TOTAL_VALID_DROPS})")
-club = metrics[metrics["Attended"] == TOTAL_VALID_DROPS]["Player"].tolist()
-st.markdown('<div class="rpl-card">', unsafe_allow_html=True)
-st.write(", ".join(club) if club else "—")
-st.markdown("</div>", unsafe_allow_html=True)
