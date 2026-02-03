@@ -208,14 +208,25 @@ if narr_path.exists():
     except Exception:
         one_liners = {}
 
-# ------------------- Player ingestion (FIXED for 50 players) -------------------
-# DO NOT dedupe by cleaned name; use row index as identity.
+# ------------------- Player ingestion (STOP before Total row) -------------------
 player_rows = []
-for rr in range(2, raw_master.shape[0]):  # start at row 2 so Ananth isn't skipped
-    nm = raw_master.iloc[rr, 2]
+
+# We start from Excel row 4 => pandas index 3 (since index 0 is row 1)
+start_rr = 3
+for rr in range(start_rr, raw_master.shape[0]):
+    nm = raw_master.iloc[rr, 2]  # Column C
+
+    # blank -> skip
     if nm is None or (isinstance(nm, float) and np.isnan(nm)):
         continue
+
     pretty = re.sub(r"\s+", " ", str(nm)).strip()
+
+    # Stop BEFORE totals row (do not include it or anything below it)
+    if pretty.lower() == "total":
+        break
+
+    # valid player name
     if pretty:
         player_rows.append((rr, pretty))
 
