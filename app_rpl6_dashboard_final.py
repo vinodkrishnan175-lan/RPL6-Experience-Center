@@ -211,27 +211,25 @@ if narr_path.exists():
 # ------------------- Player ingestion (STOP before Total row) -------------------
 player_rows = []
 
-# We start from Excel row 4 => pandas index 3 (since index 0 is row 1)
-start_rr = 3
-for rr in range(start_rr, raw_master.shape[0]):
-    nm = raw_master.iloc[rr, 2]  # Column C
-
-    # blank -> skip
-    if nm is None or (isinstance(nm, float) and np.isnan(nm)):
+# Column C = index 2. Start from row 3 (Excel row 4).
+for rr in range(3, raw_master.shape[0]):
+    nm = raw_master.iloc[rr, 2]
+    if pd.isna(nm):
         continue
 
     pretty = re.sub(r"\s+", " ", str(nm)).strip()
 
-    # Stop BEFORE totals row (do not include it or anything below it)
+    if pretty == "":
+        continue
+
     if pretty.lower() == "total":
         break
 
-    # valid player name
-    if pretty:
-        player_rows.append((rr, pretty))
+    player_rows.append((rr, pretty))
 
-# Sort by display name
-player_rows = sorted(player_rows, key=lambda x: x[1].lower())
+# DO NOT sort yet (keep original order to validate)
+st.sidebar.write("DEBUG player count:", len(player_rows))
+st.sidebar.write("DEBUG last 5:", [x[1] for x in player_rows[-5:]])
 
 # ------------------- Compute metrics -------------------
 rows = []
