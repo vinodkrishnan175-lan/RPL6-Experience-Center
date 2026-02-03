@@ -3,30 +3,17 @@ import pandas as pd
 import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
-import re, difflib
+import re
 from pathlib import Path
-
-# ===========================================
-# RPL 6 Experience Centre — Drop 33 build
-# - Metrics computed from master_data.xlsx
-# - One-liners re-used from prior metrics file (drop25_metrics.xlsx) if present
-#
-# Required repo file:
-#   data/master_data.xlsx
-# Optional repo file (for narratives only):
-#   data/drop25_metrics.xlsx
-# ===========================================
 
 st.set_page_config(page_title="RPL 6 Experience Centre", layout="wide")
 
-# ---------- Styling ----------
 st.markdown(
     """
 <style>
 html, body, [data-testid="stAppViewContainer"] { background: #0b0f14 !important; color: rgba(255,255,255,0.92) !important; }
 section[data-testid="stSidebar"] > div { background: #0b0f14 !important; border-right: 1px solid rgba(255,255,255,0.06); }
 .block-container { padding-top: 1.0rem; padding-bottom: 2.0rem; max-width: 1200px; }
-h1,h2,h3,h4 { color: rgba(255,255,255,0.96) !important; }
 
 .rpl-banner {
   border-radius: 22px;
@@ -66,15 +53,26 @@ h1,h2,h3,h4 { color: rgba(255,255,255,0.96) !important; }
 .yellow-metric { color:#ffd54d !important; font-weight:900; font-size:34px; }
 .yellow-submetric { color:#ffd54d !important; font-weight:900; font-size:22px; }
 
-.ribbon {
-  border-radius: 14px;
+.pp-strip {
+  border-radius: 12px;
   padding: 10px 12px;
   background: rgba(255,255,255,0.05);
   border: 1px solid rgba(255,255,255,0.06);
   margin-bottom: 10px;
-  color: rgba(255,255,255,0.90);
-  font-weight: 800;
+  color: rgba(255,255,255,0.92);
+  font-weight: 850;
+  font-size: 14px;
 }
+
+.metric-tile {
+  border-radius: 14px;
+  padding: 12px 12px;
+  background: rgba(255,255,255,0.04);
+  border: 1px solid rgba(255,255,255,0.06);
+}
+.metric-icon { font-size: 22px; margin-right: 8px; }
+.metric-title { color:#ffd54d; font-weight:900; font-size: 14px; }
+.metric-value { color:#ffd54d; font-weight:900; font-size: 28px; margin-top: 2px; }
 
 hr { border: none; height: 1px; background: rgba(255,255,255,0.06); margin: 14px 0; }
 
@@ -86,7 +84,6 @@ hr { border: none; height: 1px; background: rgba(255,255,255,0.06); margin: 14px
   div[data-testid="column"] { width: 100% !important; flex: 1 1 100% !important; }
   div[data-testid="stTabs"] button { font-size: 12px !important; padding: 6px 10px !important; }
   div[data-testid="stTabs"] [role="tablist"] { overflow-x: auto !important; flex-wrap: nowrap !important; }
-  div[data-testid="stTabs"] [role="tablist"]::-webkit-scrollbar { height: 6px; }
 }
 </style>
 """,
@@ -103,7 +100,6 @@ ARCH_DEF = {
     "Pragmatist": "Balanced and situational. Mixes approaches without chasing extremes.",
     "Ghost": "Low attendance so far. Not enough signal yet to infer a stable style."
 }
-
 BUCKET_EXPLAIN = {
     "H": "Most popular option (crowd favourite)",
     "M": "Middle options (neither most nor least popular)",
@@ -111,21 +107,13 @@ BUCKET_EXPLAIN = {
 }
 BUCKET_SCORE = {"H": 0.0, "M": 0.5, "L": 1.0}
 
-def clean_name(s: str) -> str:
-    if pd.isna(s):
-        return ""
-    t = str(s).replace("\u00A0", " ")
-    t = re.sub(r"[^\w\s\-']", "", t)
-    t = re.sub(r"\s+", " ", t).strip().lower()
-    return t
-
 def plotly_dark(fig):
     fig.update_layout(
         template="plotly_dark",
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
         font=dict(color="rgba(255,255,255,0.92)"),
-        margin=dict(l=8, r=8, t=35, b=10),
+        margin=dict(l=12, r=80, t=35, b=12),  # extra right margin for clarity
     )
     return fig
 
@@ -146,12 +134,7 @@ def compute_streaks(flags):
     return longest, current
 
 def parse_master_drop_groups(raw: pd.DataFrame):
-    """
-    FIXED:
-    - Question text comes from row index 1 (your file’s question row)
-    - Drop headers are in row index 0
-    """
-    row0 = raw.iloc[0].astype(str)
+    row0 = raw.iloc[0].astype(str)  # "Drop 1", "Drop 2" headers
     starts = [(i, row0[i]) for i in range(len(row0)) if isinstance(row0[i], str) and row0[i].startswith("Drop")]
     groups = []
     for idx, (start, label) in enumerate(starts):
@@ -162,15 +145,17 @@ def parse_master_drop_groups(raw: pd.DataFrame):
         if drop_num is None or drop_num == 12:
             continue
         resp_col = start
-        # question row is index 1
+        # FIX: question row is index 1 in your sheet
         q_text = raw.iloc[1, resp_col] if raw.shape[0] > 1 else f"Q{drop_num}"
         q_text = str(q_text).strip() if pd.notna(q_text) else f"Q{drop_num}"
+
         if width == 2:
             pp_col = None
             bucket_col = start + 1
         else:
             pp_col = start + 1
             bucket_col = start + 2
+
         groups.append(dict(drop=drop_num, resp_col=resp_col, pp_col=pp_col, bucket_col=bucket_col, question=q_text))
     groups = sorted(groups, key=lambda x: x["drop"])
     max_drop = max([g["drop"] for g in groups]) if groups else 0
@@ -196,10 +181,10 @@ def classify_archetype(att_pct, H_pct, M_pct, L_pct, vol_pct, risk, pp_total):
 # ------------------- Load data -------------------
 DATA_DIR = Path("data")
 master_path = DATA_DIR / "master_data.xlsx"
-narr_path = DATA_DIR / "drop25_metrics.xlsx"  # optional, for one-liners only
+narr_path = DATA_DIR / "drop25_metrics.xlsx"  # optional for one-liners
 
 if not master_path.exists():
-    st.error("Missing master file: data/master_data.xlsx (rename your uploaded master to this exact name)")
+    st.error("Missing master file: data/master_data.xlsx")
     st.stop()
 
 raw_master = pd.read_excel(master_path, sheet_name="Summary", header=None)
@@ -207,7 +192,7 @@ groups, last_drop = parse_master_drop_groups(raw_master)
 TOTAL_VALID_DROPS = len(groups)
 q_text_by_drop = {g["drop"]: g["question"] for g in groups}
 
-# Optional narratives
+# One-liners (optional)
 one_liners = {}
 if narr_path.exists():
     try:
@@ -216,41 +201,33 @@ if narr_path.exists():
         pcol = cols.get("player")
         lcol = cols.get("unique one-liner (editable)") or cols.get("unique one-liner") or cols.get("one liner") or cols.get("one-liner")
         if pcol and lcol:
-            tmp = narr[[pcol, lcol]].copy()
-            tmp[pcol] = tmp[pcol].astype(str)
-            tmp["key"] = tmp[pcol].apply(clean_name)
-            for _, rr in tmp.iterrows():
-                one_liners[rr["key"]] = "" if pd.isna(rr[lcol]) else str(rr[lcol]).strip()
+            for _, rr in narr[[pcol, lcol]].iterrows():
+                name = str(rr[pcol]).strip()
+                if name:
+                    one_liners[name.lower()] = "" if pd.isna(rr[lcol]) else str(rr[lcol]).strip()
     except Exception:
         one_liners = {}
 
-# Build player list from master col C (index 2)
-# FIXED: start at row index 2 (so Ananth doesn't get skipped)
-players = []
-row_map = {}
-for rr in range(2, raw_master.shape[0]):
-    nm = raw_master.iloc[rr, 2] if raw_master.shape[1] > 2 else None
+# ------------------- Player ingestion (FIXED for 50 players) -------------------
+# DO NOT dedupe by cleaned name; use row index as identity.
+player_rows = []
+for rr in range(2, raw_master.shape[0]):  # start at row 2 so Ananth isn't skipped
+    nm = raw_master.iloc[rr, 2]
     if nm is None or (isinstance(nm, float) and np.isnan(nm)):
         continue
-    name = re.sub(r"\s+", " ", str(nm)).strip()
-    k = clean_name(name)
-    if k:
-        players.append(name)
-        row_map[k] = rr
+    pretty = re.sub(r"\s+", " ", str(nm)).strip()
+    if pretty:
+        player_rows.append((rr, pretty))
 
-players = sorted(list(dict.fromkeys(players)), key=lambda x: x.lower())
+# Sort by display name
+player_rows = sorted(player_rows, key=lambda x: x[1].lower())
 
-# ------------------- Compute metrics from master -------------------
+# ------------------- Compute metrics -------------------
 rows = []
 pp_details = {}
 valid_pp_second = {}
 
-for name in players:
-    pk = clean_name(name)
-    rr = row_map.get(pk)
-    if rr is None:
-        continue
-
+for rr, name in player_rows:
     answered_flags = []
     bucket_seq = []
     pp_yes_drops = []
@@ -306,19 +283,20 @@ for name in players:
     if len(pp_valid) >= 2:
         d2 = int(pp_valid[1])
         moments.append(dict(ordinal="Second", drop=d2, question=q_text_by_drop.get(d2, f"Q{d2}"), bucket=pp_bucket.get(d2, "")))
-        valid_pp_second[pk] = d2
+        valid_pp_second[(rr, name)] = d2
 
-    pp_details[pk] = dict(pp_total_marked=pp_total, moments=moments)
+    pp_details[(rr, name)] = dict(pp_total_marked=pp_total, moments=moments)
 
     archetype = classify_archetype(att_pct, H_pct, M_pct, L_pct, vol, risk, pp_total)
 
-    one_liner = one_liners.get(pk, "")
+    # Narratives stay old — best-effort match on lowercased display name
+    one_liner = one_liners.get(name.lower(), "")
     if not one_liner:
         one_liner = "Narrative not loaded yet (will be updated next)."
 
     rows.append({
+        "PlayerID": rr,
         "Player": name,
-        "player_key": pk,
         "Archetype": archetype,
         "Attended": attended,
         "AttendancePct": att_pct,
@@ -330,14 +308,11 @@ for name in players:
         "PP Taken": pp_total,
         "LongestStreak": longest,
         "CurrentStreak": current,
-        "Second_PP_by_Q": valid_pp_second.get(pk, np.nan),
+        "Second_PP_by_Q": valid_pp_second.get((rr, name), np.nan),
         "OneLiner": one_liner
     })
 
 metrics = pd.DataFrame(rows)
-if metrics.empty:
-    st.error("Could not compute metrics from master_data.xlsx. Check the sheet name is 'Summary' and player names exist in column C.")
-    st.stop()
 
 # ------------------- Banner -------------------
 st.markdown(
@@ -388,9 +363,12 @@ st.markdown("## Player Experience Centre")
 st.markdown('<div class="rpl-muted">Pick a player to see: style, streaks, H/M/L mix, and Power Play moments.</div>', unsafe_allow_html=True)
 
 st.markdown("<div class='yellow-label'>Select player</div>", unsafe_allow_html=True)
-sel = st.selectbox("", metrics["Player"].tolist(), index=0, label_visibility="collapsed")
+options = list(metrics["Player"].tolist())
+sel = st.selectbox("", options, index=0, label_visibility="collapsed")
+
 p = metrics.loc[metrics["Player"] == sel].iloc[0]
-pk = p["player_key"]
+player_id = int(p["PlayerID"])
+player_key = (player_id, p["Player"])
 
 l, m, r = st.columns([1.15, 1.0, 1.15])
 
@@ -409,10 +387,8 @@ with m:
     st.markdown("### Your scoreboard")
     st.markdown(f"<div class='yellow-metric'>{int(p['Attended'])}</div><div class='yellow-label'>Attendance (out of {TOTAL_VALID_DROPS})</div>", unsafe_allow_html=True)
     st.progress(min(max(float(p["AttendancePct"]) / 100.0, 0.0), 1.0))
-
     st.markdown(f"<div class='yellow-label' style='margin-top:10px;'>Power Plays marked: {int(p['PP Taken'])} / 2 count</div>", unsafe_allow_html=True)
     st.progress(min(int(p["PP Taken"]) / 2.0, 1.0))
-
     st.markdown("<hr/>", unsafe_allow_html=True)
     st.markdown(f"<div class='yellow-submetric'>{int(p['CurrentStreak'])}</div><div class='yellow-label'>Current streak</div>", unsafe_allow_html=True)
     st.markdown(f"<div class='yellow-submetric' style='margin-top:10px;'>{int(p['LongestStreak'])}</div><div class='yellow-label'>Longest streak</div>", unsafe_allow_html=True)
@@ -424,59 +400,58 @@ with r:
 
     H = float(p["H%"]); Mv = float(p["M%"]); L = float(p["L%"])
 
-    # stacked vertical bar
     fig = go.Figure()
     fig.add_trace(go.Bar(x=[""], y=[L], name="L", marker=dict(color="#34d399")))
     fig.add_trace(go.Bar(x=[""], y=[Mv], name="M", marker=dict(color="#ef4444")))
     fig.add_trace(go.Bar(x=[""], y=[H], name="H", marker=dict(color="#6366f1")))
-    fig.update_layout(barmode="stack", showlegend=False, height=380)
+    fig.update_layout(barmode="stack", showlegend=False, height=340)
     fig = plotly_dark(fig)
-    fig.update_yaxes(range=[0, 100], title="")
-    fig.update_xaxes(showticklabels=False, title="")
-
-    # arrows + labels on RHS using annotations (paper coords)
-    # We'll place them at approx segment midpoints
-    yL = L/200
-    yM = (L + Mv/2)/100
-    yH = (L + Mv + H/2)/100
-
-    def anno(y, text):
-        fig.add_annotation(
-            x=1.04, y=y, xref="paper", yref="paper",
-            text=text,
-            showarrow=True, arrowhead=2, ax=30, ay=0,
-            font=dict(color="#ffd54d", size=12),
-            arrowcolor="rgba(255,255,255,0.40)"
-        )
-
-    anno(yH, f"H: crowd picks — {H:.0f}%")
-    anno(yM, f"M: middle picks — {Mv:.0f}%")
-    anno(yL, f"L: contrarian picks — {L:.0f}%")
-
+    fig.update_yaxes(range=[0, 100], showgrid=True, gridcolor="rgba(255,255,255,0.10)")
+    fig.update_xaxes(showticklabels=False)
     st.plotly_chart(fig, use_container_width=True)
 
+    # Clean RHS explanation block instead of plot annotations
     st.markdown(
         f"""
-<div style="display:flex; gap:18px; margin-top:6px;">
-  <div>
-    <div class="yellow-label">🎯 Risk Score</div>
-    <div class="yellow-submetric">{float(p['Risk Score']):.2f}</div>
-  </div>
-  <div>
-    <div class="yellow-label">🌊 Volatility</div>
-    <div class="yellow-submetric">{float(p['Volatility%']):.1f}%</div>
-  </div>
+<div style="margin-top:8px;">
+  <div class="yellow-label">H</div><div class="rpl-small">{BUCKET_EXPLAIN["H"]} — <b>{H:.0f}%</b></div>
+  <div class="yellow-label" style="margin-top:6px;">M</div><div class="rpl-small">{BUCKET_EXPLAIN["M"]} — <b>{Mv:.0f}%</b></div>
+  <div class="yellow-label" style="margin-top:6px;">L</div><div class="rpl-small">{BUCKET_EXPLAIN["L"]} — <b>{L:.0f}%</b></div>
 </div>
 """,
         unsafe_allow_html=True
     )
+
+    st.markdown("<hr/>", unsafe_allow_html=True)
+    a, b = st.columns(2)
+    with a:
+        st.markdown(
+            f"""
+<div class="metric-tile">
+  <div class="metric-title"><span class="metric-icon">🎯</span>Risk Score</div>
+  <div class="metric-value">{float(p['Risk Score']):.2f}</div>
+</div>
+""",
+            unsafe_allow_html=True
+        )
+    with b:
+        st.markdown(
+            f"""
+<div class="metric-tile">
+  <div class="metric-title"><span class="metric-icon">🌊</span>Volatility</div>
+  <div class="metric-value">{float(p['Volatility%']):.1f}%</div>
+</div>
+""",
+            unsafe_allow_html=True
+        )
+
     st.markdown("</div>", unsafe_allow_html=True)
 
 # ------------------- Power Play moments -------------------
 st.markdown("### Power Play moments")
 st.markdown('<div class="rpl-muted">Only the first two Power Plays count. If you marked more, your early Power Play moments are the ones that matter.</div>', unsafe_allow_html=True)
 
-info = pp_details.get(pk, {"pp_total_marked": 0, "moments": []})
+info = pp_details.get(player_key, {"pp_total_marked": 0, "moments": []})
 pp_total = info.get("pp_total_marked", 0)
 moments = info.get("moments", [])
 
@@ -501,6 +476,7 @@ else:
 
 # ------------------- Risk + Story Mode -------------------
 st.markdown("## Risk + Power Plays + Story Mode")
+
 st.markdown("### Risk vs Attendance Map")
 st.markdown('<div class="rpl-muted">Y-axis: Risk Score (H→L). X-axis: Attendance%. Hover: name + archetype only.</div>', unsafe_allow_html=True)
 
@@ -519,7 +495,6 @@ figm = plotly_dark(figm)
 figm.update_layout(height=520)
 st.plotly_chart(figm, use_container_width=True)
 
-# ------------------- Power Play Status (with ribbon text) -------------------
 st.markdown("### Power Play Status")
 
 pp0 = metrics[metrics["PP Taken"] == 0]["Player"].tolist()
@@ -527,24 +502,70 @@ pp1 = metrics[metrics["PP Taken"] == 1]["Player"].tolist()
 pp2p = metrics[metrics["PP Taken"] >= 2]["Player"].tolist()
 
 b1, b2, b3 = st.columns(3)
-
 with b1:
     st.markdown('<div class="rpl-card">', unsafe_allow_html=True)
-    st.markdown('<div class="ribbon">Both Power Plays not used yet</div>', unsafe_allow_html=True)
+    st.markdown('<div class="pp-strip">Both Power Plays not used yet</div>', unsafe_allow_html=True)
     st.markdown(f"**Conviction still loaded ({len(pp0)})**")
     st.write(", ".join(pp0) if pp0 else "—")
     st.markdown("</div>", unsafe_allow_html=True)
 
 with b2:
     st.markdown('<div class="rpl-card">', unsafe_allow_html=True)
-    st.markdown('<div class="ribbon">Only 1 Power Play used so far</div>', unsafe_allow_html=True)
+    st.markdown('<div class="pp-strip">Only 1 Power Play used so far</div>', unsafe_allow_html=True)
     st.markdown(f"**One-shot conviction ({len(pp1)})**")
     st.write(", ".join(pp1) if pp1 else "—")
     st.markdown("</div>", unsafe_allow_html=True)
 
 with b3:
     st.markdown('<div class="rpl-card">', unsafe_allow_html=True)
-    st.markdown('<div class="ribbon">Both Power Plays exhausted</div>', unsafe_allow_html=True)
+    st.markdown('<div class="pp-strip">Both Power Plays exhausted</div>', unsafe_allow_html=True)
     st.markdown(f"**Two chips spent ({len(pp2p)})**")
     st.write(", ".join(pp2p) if pp2p else "—")
     st.markdown("</div>", unsafe_allow_html=True)
+
+# Story Mode + Perfect Attendance restored
+st.markdown("### Story Mode")
+tabs = st.tabs(["Contrarian League", "Most Volatile", "Wildcards", "Conviction Still Loaded", "All-In Early"])
+story = metrics[(metrics["AttendancePct"] >= 30) & (metrics["Attended"] > 0)].copy()
+
+with tabs[0]:
+    st.markdown('<div class="rpl-card">', unsafe_allow_html=True)
+    st.markdown("**What this list means:** Players who most often choose the least popular option (high L%).")
+    top = story.sort_values("L%", ascending=False).head(10)
+    st.write(", ".join(top["Player"].tolist()) if len(top) else "—")
+    st.markdown("</div>", unsafe_allow_html=True)
+
+with tabs[1]:
+    st.markdown('<div class="rpl-card">', unsafe_allow_html=True)
+    st.markdown("**What this list means:** Players who change buckets frequently (high volatility).")
+    top = story.sort_values("Volatility%", ascending=False).head(10)
+    st.write(", ".join(top["Player"].tolist()) if len(top) else "—")
+    st.markdown("</div>", unsafe_allow_html=True)
+
+with tabs[2]:
+    st.markdown('<div class="rpl-card">', unsafe_allow_html=True)
+    st.markdown("**What this list means:** Wildcards are high-variance profiles (risk + volatility). Different from Contrarians: contrarians stay L-leaning; wildcards can swing anywhere.")
+    top = story[story["Archetype"] == "Wildcard"].sort_values(["AttendancePct", "Risk Score"], ascending=False).head(12)
+    st.write(", ".join(top["Player"].tolist()) if len(top) else "—")
+    st.markdown("</div>", unsafe_allow_html=True)
+
+with tabs[3]:
+    st.markdown('<div class="rpl-card">', unsafe_allow_html=True)
+    st.markdown("**What this list means:** Players who haven’t used a Power Play yet — both chips still available.")
+    top = story[story["PP Taken"] == 0].sort_values("AttendancePct", ascending=False).head(20)
+    st.write(", ".join(top["Player"].tolist()) if len(top) else "—")
+    st.markdown("</div>", unsafe_allow_html=True)
+
+with tabs[4]:
+    st.markdown('<div class="rpl-card">', unsafe_allow_html=True)
+    st.markdown("**What this list means:** Players who exhausted both valid Power Plays early — we show the question by which their 2nd PP was used.")
+    tmp = metrics.dropna(subset=["Second_PP_by_Q"]).sort_values("Second_PP_by_Q", ascending=True).head(12)
+    items = [f"{rr.Player} (by Q{int(rr.Second_PP_by_Q)})" for rr in tmp.itertuples()]
+    st.write(", ".join(items) if items else "—")
+    st.markdown("</div>", unsafe_allow_html=True)
+
+st.markdown(f"### Perfect Attendance Club ({TOTAL_VALID_DROPS}/{TOTAL_VALID_DROPS})")
+club = metrics[metrics["Attended"] == TOTAL_VALID_DROPS]["Player"].tolist()
+st.markdown('<div class="rpl-card">', unsafe_allow_html=True)
+st.write(", ".join(club) if club else "—")
+st.markdown("</div>", unsafe_allow_html=True)
